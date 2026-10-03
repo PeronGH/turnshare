@@ -62,7 +62,7 @@ document.addEventListener("alpine:init", () => {
 		files: [],
 		codeInput: "",
 		link: "",
-		copied: false,
+		copied: "",
 		status: "",
 		error: "",
 		busy: false,
@@ -118,9 +118,9 @@ document.addEventListener("alpine:init", () => {
 			this.run(() => this.connect());
 		},
 
-		async copy() {
-			await navigator.clipboard.writeText(this.link);
-			this.copied = true;
+		async copy(what, text) {
+			await navigator.clipboard.writeText(text);
+			this.copied = what;
 		},
 
 		async connect() {

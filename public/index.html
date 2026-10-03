@@ -10,6 +10,7 @@
 		<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js"></script>
 		<style>
 			[x-cloak] { display: none !important; }
+			[role="group"] button { white-space: nowrap; }
 		</style>
 	</head>
 	<body>
@@ -30,9 +31,17 @@
 					<button x-show="!link" @click="share" :disabled="!files.length">Create link</button>
 					<fieldset x-show="link" role="group">
 						<input readonly :value="link" aria-label="Share link" @focus="$el.select()" />
-						<button @click="copy" x-text="copied ? 'Copied' : 'Copy'"></button>
+						<button @click="copy('link', link)" x-text="copied === 'link' ? 'Copied' : 'Copy link'"></button>
 					</fieldset>
-					<p x-show="link">Or tell them the code: <strong x-text="roomId"></strong></p>
+					<template x-if="link">
+						<div>
+							<small>Or tell them the code</small>
+							<fieldset role="group">
+								<input readonly :value="roomId" aria-label="Share code" @focus="$el.select()" />
+								<button @click="copy('code', roomId)" x-text="copied === 'code' ? 'Copied' : 'Copy code'"></button>
+							</fieldset>
+						</div>
+					</template>
 				</article>
 			</template>
 
