@@ -42,10 +42,13 @@ async function selectedRoute(pc) {
 		? stats.get(transport.selectedCandidatePairId)
 		: values.find((s) => s.type === "candidate-pair" && s.nominated && s.state === "succeeded");
 	if (!pair) return "";
-	const relayed = [pair.localCandidateId, pair.remoteCandidateId].some(
-		(id) => stats.get(id)?.candidateType === "relay",
-	);
-	return relayed ? "relayed via TURN" : "direct";
+	const local = stats.get(pair.localCandidateId);
+	const remote = stats.get(pair.remoteCandidateId);
+	const relayed = [local, remote].some((c) => c?.candidateType === "relay");
+	const route = relayed ? "relayed via TURN" : "direct";
+	// Remote relay candidates carry the TURN server's IP; mDNS (.local) and prflx addresses may be hidden.
+	const address = remote?.candidateType !== "relay" && remote?.address;
+	return address && !address.endsWith(".local") ? `${route} · ${address}` : route;
 }
 
 document.addEventListener("alpine:init", () => {
