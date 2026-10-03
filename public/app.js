@@ -1,6 +1,7 @@
 const CHUNK_SIZE = 64 * 1024;
 const HIGH_WATER_MARK = 4 * 1024 * 1024;
 const KEEPALIVE_MS = 30_000;
+const DOWNLOAD_INTERVAL_MS = 300;
 
 function randomId() {
 	const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -255,6 +256,15 @@ document.addEventListener("alpine:init", () => {
 				this.done = true;
 				channel.send(JSON.stringify({ type: "done" }));
 				this.setStatus("Done. Click a file to save it.");
+			}
+		},
+
+		async downloadAll() {
+			for (const { name, url } of this.downloads) {
+				const link = Object.assign(document.createElement("a"), { href: url, download: name });
+				link.click();
+				// Browsers drop rapid back-to-back downloads; space them out.
+				await new Promise((resolve) => setTimeout(resolve, DOWNLOAD_INTERVAL_MS));
 			}
 		},
 	}));
