@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
-const ROOM_PATH = /^\/api\/room\/([A-Za-z0-9_-]{16,64})$/;
+const ROOM_PATH = /^\/api\/room\/([a-z]+-[a-z]+)$/;
 const TURN_TTL_SECONDS = 12 * 60 * 60;
 
 export class Room extends DurableObject<Env> {

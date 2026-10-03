@@ -2,10 +2,24 @@ const CHUNK_SIZE = 64 * 1024;
 const HIGH_WATER_MARK = 4 * 1024 * 1024;
 const KEEPALIVE_MS = 30_000;
 const DOWNLOAD_INTERVAL_MS = 300;
+const CODE_WORDS = 2;
+const CODE_PATTERN = /^[a-z]+-[a-z]+$/;
 
-function randomId() {
-	const bytes = crypto.getRandomValues(new Uint8Array(16));
-	return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function randomWord() {
+	// Rejection sampling keeps the pick uniform across a non-power-of-two list.
+	const limit = 65536 - (65536 % WORDS.length);
+	const buf = new Uint16Array(1);
+	do crypto.getRandomValues(buf);
+	while (buf[0] >= limit);
+	return WORDS[buf[0] % WORDS.length];
+}
+
+function randomCode() {
+	return Array.from({ length: CODE_WORDS }, randomWord).join("-");
+}
+
+function normalizeCode(input) {
+	return input.trim().toLowerCase().split(/[\s-]+/).join("-");
 }
 
 function formatBytes(bytes) {
@@ -46,6 +60,7 @@ document.addEventListener("alpine:init", () => {
 		roomId: location.hash.slice(1),
 		role: location.hash.length > 1 ? "receiver" : "sender",
 		files: [],
+		codeInput: "",
 		link: "",
 		copied: false,
 		status: "",
@@ -79,13 +94,26 @@ document.addEventListener("alpine:init", () => {
 			this.busy = busy;
 		},
 
+		join() {
+			const code = normalizeCode(this.codeInput);
+			if (!CODE_PATTERN.test(code)) {
+				this.error = "A code is two words, like crumb-ivory.";
+				return;
+			}
+			history.replaceState(null, "", `#${code}`);
+			this.error = "";
+			this.roomId = code;
+			this.role = "receiver";
+			this.run(() => this.connect());
+		},
+
 		pick(event) {
 			selected = [...event.target.files];
 			this.files = selected.map(({ name, size }) => ({ name, size }));
 		},
 
 		share() {
-			this.roomId = randomId();
+			this.roomId = randomCode();
 			this.link = `${location.origin}${location.pathname}#${this.roomId}`;
 			this.run(() => this.connect());
 		},

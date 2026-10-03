@@ -5,6 +5,7 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Turnshare</title>
 		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.min.css" />
+		<script defer src="/words.js"></script>
 		<script defer src="/app.js"></script>
 		<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.17.4/dist/cdn.min.js"></script>
 		<style>
@@ -31,7 +32,17 @@
 						<input readonly :value="link" aria-label="Share link" @focus="$el.select()" />
 						<button @click="copy" x-text="copied ? 'Copied' : 'Copy'"></button>
 					</fieldset>
+					<p x-show="link">Or tell them the code: <strong x-text="roomId"></strong></p>
 				</article>
+			</template>
+
+			<template x-if="role === 'sender' && !link">
+				<form @submit.prevent="join">
+					<fieldset role="group">
+						<input x-model="codeInput" placeholder="Have a code? e.g. crumb-ivory" aria-label="Receive code" autocomplete="off" autocapitalize="none" spellcheck="false" />
+						<button type="submit" :disabled="!codeInput.trim()">Receive</button>
+					</fieldset>
+				</form>
 			</template>
 
 			<article x-show="status || error">
