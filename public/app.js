@@ -316,10 +316,12 @@ document.addEventListener("alpine:init", () => {
 			for (const file of selected) {
 				for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
 					if (ch.bufferedAmount > HIGH_WATER_MARK) {
+						const waited = new AbortController();
 						await new Promise((resolve) => {
-							ch.addEventListener("bufferedamountlow", resolve, { once: true });
-							ch.addEventListener("close", resolve, { once: true });
+							ch.addEventListener("bufferedamountlow", resolve, { signal: waited.signal });
+							ch.addEventListener("close", resolve, { signal: waited.signal });
 						});
+						waited.abort();
 					}
 					const chunk = await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer();
 					// The channel closed mid-transfer; its close handler takes over.
