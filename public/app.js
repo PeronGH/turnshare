@@ -46,8 +46,12 @@ async function selectedRoute(pc) {
 	const remote = stats.get(pair.remoteCandidateId);
 	const relayed = [local, remote].some((c) => c?.candidateType === "relay");
 	const route = relayed ? "relayed via TURN" : "direct";
-	// Remote relay candidates carry the TURN server's IP; mDNS (.local) and prflx addresses may be hidden.
-	const address = remote?.candidateType !== "relay" && remote?.address;
+	// Remote relay candidates carry the TURN server's IP, so fall back to the peer's signaled srflx (public) address.
+	// mDNS (.local) and prflx addresses may be hidden.
+	const srflx = values
+		.filter((s) => s.type === "remote-candidate" && s.candidateType === "srflx" && s.address)
+		.sort((a, b) => a.address.includes(":") - b.address.includes(":"));
+	const address = remote?.candidateType === "relay" ? srflx[0]?.address : remote?.address;
 	return address && !address.endsWith(".local") ? `${route} · ${address}` : route;
 }
 
