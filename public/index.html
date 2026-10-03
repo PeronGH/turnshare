@@ -20,7 +20,7 @@
 
 			<template x-if="role === 'sender'">
 				<article>
-					<input type="file" multiple @change="pick" :disabled="link" aria-label="Files to send" />
+					<input type="file" multiple @change="pick" :disabled="!!link" aria-label="Files to send" />
 					<ul x-show="files.length">
 						<template x-for="file in files">
 							<li><span x-text="file.name"></span> <small x-text="formatBytes(file.size)"></small></li>
