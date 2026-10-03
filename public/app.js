@@ -2,6 +2,8 @@ const CHUNK_SIZE = 64 * 1024;
 const HIGH_WATER_MARK = 4 * 1024 * 1024;
 const KEEPALIVE_MS = 30_000;
 const DOWNLOAD_INTERVAL_MS = 300;
+const MAX_RECONNECT_DELAY_MS = 10_000;
+const ICE_RESTART_DELAY_MS = 2_000;
 const CODE_WORDS = 2;
 const CODE_PATTERN = /^[a-z]+-[a-z]+$/;
 
@@ -48,7 +50,11 @@ async function selectedRoute(pc) {
 
 document.addEventListener("alpine:init", () => {
 	// Native WebRTC/WebSocket objects live outside Alpine's reactive proxies.
-	let ws, pc, channel, keepalive, iceServers;
+	let ws, pc, channel, keepalive, iceServers, session, restartTimer;
+	let socketAttempts = 0;
+	let socketRetries = 0;
+	// Receiver: this page's identity. Sender: the receiver currently being served.
+	let peerId;
 	let selected = [];
 	let signalQueue = Promise.resolve();
 	let manifest = [];
@@ -128,61 +134,116 @@ document.addEventListener("alpine:init", () => {
 			const res = await fetch("/api/turn");
 			if (!res.ok) throw new Error(`Failed to get TURN credentials (${res.status})`);
 			({ iceServers } = await res.json());
+			if (this.role === "receiver") peerId = crypto.randomUUID();
+			this.openSocket();
+		},
 
+		openSocket() {
 			const scheme = location.protocol === "https:" ? "wss" : "ws";
-			ws = new WebSocket(`${scheme}://${location.host}/api/room/${this.roomId}`);
-			ws.onopen = () => {
-				keepalive = setInterval(() => ws.send("ping"), KEEPALIVE_MS);
-				if (this.role === "sender") this.setStatus("Waiting for the receiver to open the link…", true);
-				else this.setStatus("Waiting for the sender…", true);
+			const socket = (ws = new WebSocket(`${scheme}://${location.host}/api/room/${this.roomId}`));
+			const firstAttempt = ++socketAttempts === 1;
+
+			socket.onopen = () => {
+				socketRetries = 0;
+				keepalive = setInterval(() => socket.send("ping"), KEEPALIVE_MS);
+				if (!pc) {
+					this.setStatus(
+						this.role === "sender" ? "Waiting for the receiver to open the link…" : "Waiting for the sender…",
+						true,
+					);
+				}
+				if (this.role === "receiver") this.send({ type: "ready", peerId });
 			};
-			ws.onmessage = ({ data }) => {
+			socket.onmessage = ({ data }) => {
 				if (data === "pong") return;
 				const msg = JSON.parse(data);
-				signalQueue = signalQueue.then(() => this.signal(msg)).catch((err) => this.fail(err));
+				this.enqueue(() => this.signal(msg));
 			};
-			ws.onclose = ({ code }) => {
+			socket.onclose = ({ code }) => {
 				clearInterval(keepalive);
-				if (code === 4409) this.fail("This link is already in use.");
-				else if (!this.done) this.fail("Lost connection to the signaling server.");
+				// A reconnect can briefly hit "room full" until the room notices our old socket is gone.
+				if (code === 4409 && firstAttempt) return this.fail("This link is already in use.");
+				if (this.role === "receiver" && this.done) return;
+				if (!this.peerConnected()) this.setStatus("Reconnecting to the signaling server…", true);
+				const delay = Math.min(1000 * 2 ** socketRetries++, MAX_RECONNECT_DELAY_MS);
+				setTimeout(() => this.openSocket(), delay);
 			};
 		},
 
 		send(msg) {
-			ws.send(JSON.stringify(msg));
+			if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 		},
 
+		enqueue(task) {
+			signalQueue = signalQueue.then(task).catch((err) => this.fail(err));
+		},
+
+		peerConnected() {
+			return pc?.connectionState === "connected";
+		},
+
+		// Signaling: the sender always offers. The receiver announces itself with "ready" whenever its
+		// socket (re)connects or the sender (re)joins. A "session" identifies one RTCPeerConnection pair.
 		async signal(msg) {
 			switch (msg.type) {
 				case "peer-joined":
-					this.startPeer();
-					await pc.setLocalDescription();
-					this.send({ type: "description", description: pc.localDescription });
+					if (this.role === "receiver") this.send({ type: "ready", peerId });
+					break;
+				case "ready":
+					if (msg.peerId === peerId && channel?.readyState === "open") {
+						await this.restartIfStale();
+					} else {
+						peerId = msg.peerId;
+						await this.offerNewPeer();
+					}
 					break;
 				case "peer-left":
+					// The other side's socket dropping doesn't matter while WebRTC is still up.
+					if (this.peerConnected()) break;
 					if (this.role === "sender") {
 						this.closePeer();
+						peerId = undefined;
 						this.setStatus("Waiting for the receiver to open the link…", true);
 					} else if (!this.done) {
-						this.fail("The sender left.");
+						this.setStatus("The sender disconnected. Waiting for them to come back…", true);
 					}
 					break;
 				case "description":
-					if (msg.description.type === "offer") this.startPeer();
-					await pc.setRemoteDescription(msg.description);
-					if (msg.description.type === "offer") {
+					if (this.role === "receiver") {
+						if (msg.session !== session) this.startPeer(msg.session);
+						await pc.setRemoteDescription(msg.description);
 						await pc.setLocalDescription();
-						this.send({ type: "description", description: pc.localDescription });
+						this.send({ type: "description", session, description: pc.localDescription });
+					} else if (msg.session === session && pc.signalingState === "have-local-offer") {
+						await pc.setRemoteDescription(msg.description);
 					}
 					break;
 				case "candidate":
-					await pc.addIceCandidate(msg.candidate);
+					if (msg.session !== session) break;
+					// Candidates from before an ICE restart are rejected; that's expected.
+					await pc.addIceCandidate(msg.candidate).catch(() => {});
 					break;
 			}
 		},
 
-		startPeer() {
+		async offerNewPeer() {
+			this.startPeer(crypto.randomUUID());
+			await pc.setLocalDescription();
+			this.send({ type: "description", session, description: pc.localDescription });
+		},
+
+		async restartIfStale() {
+			if (!pc || this.peerConnected() || channel?.readyState !== "open") return;
+			// A previous restart offer may have been lost while signaling was down.
+			if (pc.signalingState === "have-local-offer") await pc.setLocalDescription({ type: "rollback" });
+			pc.restartIce();
+			await pc.setLocalDescription();
+			this.send({ type: "description", session, description: pc.localDescription });
+		},
+
+		startPeer(newSession) {
 			this.closePeer();
+			session = newSession;
 			this.error = "";
 			this.done = false;
 			this.route = "";
@@ -190,31 +251,54 @@ document.addEventListener("alpine:init", () => {
 
 			const peer = (pc = new RTCPeerConnection({ iceServers }));
 			peer.onicecandidate = ({ candidate }) => {
-				if (candidate) this.send({ type: "candidate", candidate });
+				if (candidate) this.send({ type: "candidate", session: newSession, candidate });
 			};
 			peer.onconnectionstatechange = () => {
-				if (peer !== pc) return;
-				if (peer.connectionState === "connected") {
-					selectedRoute(peer).then((route) => (this.route = route));
-				} else if (peer.connectionState === "failed" && !this.done) {
-					this.fail("Peer connection failed.");
-				}
+				if (peer === pc) this.onConnectionState();
 			};
 
-			channel = peer.createDataChannel("files", { negotiated: true, id: 0 });
-			channel.binaryType = "arraybuffer";
-			channel.bufferedAmountLowThreshold = HIGH_WATER_MARK / 4;
-			channel.onopen = () => {
+			const ch = (channel = peer.createDataChannel("files", { negotiated: true, id: 0 }));
+			ch.binaryType = "arraybuffer";
+			ch.bufferedAmountLowThreshold = HIGH_WATER_MARK / 4;
+			ch.onopen = () => {
 				if (this.role === "sender") this.run(() => this.sendFiles());
 				else this.setStatus("Receiving…", true);
 			};
-			channel.onmessage = ({ data }) => this.receive(data);
+			ch.onmessage = ({ data }) => this.receive(data);
+			ch.onclose = () => {
+				if (ch !== channel || this.done) return;
+				// The data channel can't be recovered; start over with a fresh connection.
+				this.setStatus("Connection lost, reconnecting…", true);
+				if (this.role === "sender") this.enqueue(() => this.offerNewPeer());
+			};
+		},
+
+		onConnectionState() {
+			clearTimeout(restartTimer);
+			switch (pc.connectionState) {
+				case "connected":
+					selectedRoute(pc).then((route) => (this.route = route));
+					if (!this.done && channel.readyState === "open") {
+						this.setStatus(this.role === "sender" ? "Sending…" : "Receiving…", true);
+					}
+					break;
+				case "disconnected":
+				case "failed":
+					if (!this.done) this.setStatus("Connection interrupted, reconnecting…", true);
+					if (this.role === "sender") {
+						// "disconnected" often recovers on its own; give it a moment before restarting ICE.
+						const delay = pc.connectionState === "failed" ? 0 : ICE_RESTART_DELAY_MS;
+						restartTimer = setTimeout(() => this.enqueue(() => this.restartIfStale()), delay);
+					}
+					break;
+			}
 		},
 
 		closePeer() {
+			clearTimeout(restartTimer);
 			channel?.close();
 			pc?.close();
-			channel = pc = undefined;
+			channel = pc = session = undefined;
 		},
 
 		async sendFiles() {
@@ -238,7 +322,7 @@ document.addEventListener("alpine:init", () => {
 						});
 					}
 					const chunk = await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer();
-					// The receiver may have left mid-transfer; the room handler already reset the UI.
+					// The channel closed mid-transfer; its close handler takes over.
 					if (ch.readyState !== "open") return;
 					ch.send(chunk);
 					this.transferred += chunk.byteLength;
@@ -252,6 +336,7 @@ document.addEventListener("alpine:init", () => {
 				const msg = JSON.parse(data);
 				if (msg.type === "manifest") {
 					manifest = msg.files;
+					this.downloads = [];
 					fileIndex = 0;
 					parts = [];
 					partBytes = 0;
